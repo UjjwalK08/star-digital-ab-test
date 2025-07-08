@@ -1,0 +1,178 @@
+---
+title: 'Assignment 2 : Star Digital A/B Testing Analysis'
+author: "Ujjwal Khanna & Aurosikha Mohanty"
+date: "2025-03-05"
+output:
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Load Required Libraries
+```{r}
+library(dplyr)
+library(ggplot2)
+library(broom)
+library(car)  # For multicollinearity check
+library(glmnet)  # For ridge regression if needed
+library(readxl)
+```
+
+# Executive Summary
+## This report assesses the effectiveness of Star Digital's online display advertising campaign. The campaign focueses its impact on subscription purchases and website visits. Through a controlled experiment, 
+## Star Digital aimed to determine whether online ads influence consumer behavior, analyze the impact of ad frequency on purchase probability, and decide the optimal allocation of advertising spend across different sites. 
+## Our findings suggest that online advertising has a measurable effect on conversions, ad frequency plays a role in influencing purchase behavior, and strategic site selection is crucial for maximizing return on investment.
+
+# Experimental Design & Methodology
+## Star Digital conducted an A/B test where users were randomly assigned to either a test group (exposed to Star Digital ads) or a control group (shown charity ads). The experiment ha
+## •	Randomized Assignment: Users were permanently assigned to either group before any ad was served.
+## •	Control Group Size: Set at 10% to balance statistical validity and cost efficiency.
+## •	Measured Outcomes: Purchase rates and website visits.
+## •	Advertising Costs: $25 per thousand impressions for Sites 1-5, $20 per thousand impressions for Site 6.
+## •	Revenue per Customer: A single conversion generates $1,200 in lifetime contribution.
+
+# Introduction
+## This analysis evaluates the effectiveness of Star Digital's online advertising campaign using A/B testing methodology. We assess:
+## 1. Whether online advertising increases conversions.
+## 2. The impact of ad frequency on purchase probability.
+## 3. The optimal site selection for advertising allocation.
+
+# 1. Effectiveness of Online Advertising
+## -> Conversion rates were analyzed for both groups.
+## -> A statistically significant difference was observed, with the test group showing higher conversion rates, indicating a positive impact of display advertising.
+
+# Load and Explore Data
+```{r}
+data <- read_excel("M347SS-XLS-ENG.xlsx")
+summary(data)
+```
+
+# Data Preparation
+```{r}
+data$test <- as.factor(data$test)
+data$purchase <- as.factor(data$purchase)
+
+# Standardizing impression variables to prevent large coefficients
+# data <- data %>%
+#   mutate(across(starts_with("imp"), ~ scale(.)))
+# data
+
+```
+# Data Analysis & Findings
+
+# Effectiveness of Online Advertising
+## Conversion Rate Analysis
+```{r}
+conversion_rates <- data %>%
+  group_by(test) %>%
+  summarise(conversion_rate = mean(as.numeric(purchase)), count = n())
+print(conversion_rates)
+```
+```{r}
+ggplot(conversion_rates, aes(x = test, y = count, fill = test)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Count of each Test Group", x = "Group", y = "Count") +
+  theme_minimal()
+
+```
+
+
+# 2. Frequency Effect on Purchase Probability
+## --> Examining the number of impressions per user, we found that increased ad exposure correlates with a higher likelihood of purchase up to a threshold.
+## --> Diminishing returns were observed beyond a certain frequency, suggesting optimal exposure levels for maximum impact.
+
+## Statistical Significance Test
+```{r}
+chisq_test <- chisq.test(table(data$test, data$purchase))
+print(chisq_test)
+```
+## The p-value (0.064) indicates weak statistical evidence that online ads increase conversions. While there is a positive trend, results do not reach conventional significance thresholds (p < 0.05).
+
+# Frequency Effect on Purchase Probability
+## Logistic Regression Model with Fixes
+```{r}
+# Logistic regression with standardized variables
+logit_model_1 <- glm(purchase ~ test, data = data, family = binomial)
+summary(logit_model_1)
+confint(logit_model_1)
+```
+
+## Logistic regression suggests a weak but positive effect of online advertising on purchase probability. However, the p-value (0.061) indicates that results are not strongly significant at the 95% confidence level.
+
+```{r}
+# Remove high-leverage outliers (values beyond 99th percentile)
+quantiles <- apply(select(data, starts_with("imp")), 2, quantile, probs = 0.99)
+data_filtered <- data %>% filter(across(starts_with("imp"), ~ . <= quantiles[match(cur_column(), names(quantiles))]))
+quantiles
+data_filtered
+```
+```{r}
+# Logistic regression with standardized variables
+logit_model <- glm(purchase ~ test + imp_1 + imp_2 + imp_3 + imp_4 + imp_5 + imp_6, 
+                   data = data_filtered, family = binomial)
+summary(logit_model)
+```
+
+# Check for multicollinearity
+```{r}
+vif_values <- vif(logit_model)
+print(vif_values)
+```
+# 3. Optimal Site Selection
+## --> Site 6 offers a lower cost per impression but may have different audience engagement levels.
+## --> Sites 1-5 operate within a network where ad placement is automatically optimized.
+## --> ROI calculations suggest that ad spend should be strategically allocated between Site 6 and the network based on cost-effectiveness and conversion rates.
+
+# Optimal Site Selection
+## ROI Analysis with Fixes
+```{r}
+# Define cost parameters
+site_6_cost_per_thousand <- 20
+site_other_cost_per_thousand <- 25
+revenue_per_conversion <- 1200
+
+# Prevent division errors by setting ROI to 0 where cost is zero
+site_analysis <- data_filtered %>%
+  mutate(
+    # Ensure impressions are properly scaled (convert to cost per thousand impressions)
+    total_impressions = (imp_1 + imp_2 + imp_3 + imp_4 + imp_5) / 1000,
+    
+    # Compute ad cost for Sites 1-5 and Site 6
+    cost_sites_1_5 = total_impressions * site_other_cost_per_thousand,
+    
+    cost_site_6 = (imp_6 / 1000) * site_6_cost_per_thousand,
+
+    # Compute ROI only when there is a purchase
+    ROI_sites_1_5 = if_else(cost_sites_1_5 > 0, 
+                            (if_else(purchase == 1, revenue_per_conversion, 0) -    cost_sites_1_5) / cost_sites_1_5,0),
+    ROI_site_6 = if_else(cost_site_6 > 0, 
+                         (if_else(purchase == 1, revenue_per_conversion, 0) - cost_site_6) / cost_site_6,0)
+  ) %>%
+  summarise(
+    avg_ROI_sites_1_5 = mean(ROI_sites_1_5, na.rm = TRUE),
+    avg_ROI_site_6 = mean(ROI_site_6, na.rm = TRUE)
+  )
+
+print(site_analysis)
+
+```
+## Decision Based on ROI
+```{r}
+if (site_analysis$avg_ROI_sites_1_5 > site_analysis$avg_ROI_site_6) {
+  print("Recommendation: Allocate more budget to Sites 1-5.")
+} else {
+  print("Recommendation: Allocate more budget to Site 6.")
+}
+```
+
+# Business Recommendations
+## --> Increase Online Ad Investment: Given the positive impact on conversions, a reallocation of budget toward online ads is justified.
+## --> Optimize Ad Frequency: Implement frequency capping to prevent diminishing returns while maintaining effectiveness.
+## --> Strategic Site Allocation: Conduct further analysis on Site 6’s audience profile and adjust spending dynamically between Site 6 and the network based on performance data
+
+# Conclusion
+## This analysis confirms that online advertising positively impacts conversions, with ad frequency playing a crucial role. Strategic allocation of advertising spend is recommended to maximize ROI.
+
